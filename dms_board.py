@@ -227,7 +227,7 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### ⚙️ Dashboard Controls")
     st.markdown("---")
-    st.markdown("#### 📂 Cloud File Sync")
+    st.markdown("#### 📂 Optional Cloud File Sync")
     uploaded_mis = st.file_uploader("Upload `PERK MIS.-2026.xlsx`", type=["xlsx"], key="mis_uploader")
     uploaded_shoplogix = st.file_uploader("Upload Shoplogix Making Report", type=["xlsx", "xls"], key="slx_uploader")
     uploaded_eff = st.file_uploader("Upload Machine Efficiency Report", type=["xlsx", "xls"], key="eff_uploader")
@@ -420,6 +420,8 @@ def load_packing_minor_stops(mis_path_or_buffer, ms_dir):
         if hasattr(mis_path_or_buffer, "read"):
             xl = pd.ExcelFile(mis_path_or_buffer)
         else:
+            if not os.path.exists(mis_path_or_buffer):
+                return pd.DataFrame()
             tmp_path = safe_copy_file(mis_path_or_buffer)
             xl = pd.ExcelFile(tmp_path)
             if os.path.exists(tmp_path) and tmp_path != mis_path_or_buffer:
@@ -529,13 +531,18 @@ def load_efficiency_data(folder_path_or_buffer):
             try: os.remove(tmp_path)
             except Exception: pass
 
-# --- LOAD DATASETS (HANDLES CLOUD UPLOADS OR LOCAL PATHS) ---
+# --- LOAD DATASETS (HANDLES CLOUD UPLOADS, REPO DEFAULTS, OR LOCAL PATHS) ---
 try:
-    mis_source = uploaded_mis if uploaded_mis is not None else FILE_PATH
+    if uploaded_mis is not None:
+        mis_source = uploaded_mis
+    elif os.path.exists(FILE_PATH):
+        mis_source = FILE_PATH
+    else:
+        mis_source = "PERK MIS.-2026.xlsx"
+
     rows_data, blocks, all_board_blocks = load_dms_6day_matrix(mis_source, SHEET_DMS)
 except Exception as e:
-    st.error(f"⚠️ Error loading DMS Board source file.")
-    st.exception(e)
+    st.error("⚠️ Error loading DMS Board source file. Please upload `PERK MIS.-2026.xlsx` in the sidebar.")
     st.stop()
 
 if uploaded_shoplogix is not None:
@@ -546,8 +553,12 @@ if uploaded_shoplogix is not None:
 else:
     df_shoplogix_all = load_shoplogix_from_folder(SHOPLOGIX_DIR)
 
-eff_source = uploaded_eff if uploaded_eff is not None else EFFICIENCY_DIR
-df_eff_master = load_efficiency_data(eff_source)
+if uploaded_eff is not None:
+    df_eff_master = load_efficiency_data(uploaded_eff)
+else:
+    eff_source = EFFICIENCY_DIR if os.path.exists(EFFICIENCY_DIR) else "Machine Efficiency"
+    df_eff_master = load_efficiency_data(eff_source)
+
 df_packing_ms_all = load_packing_minor_stops(mis_source, MINOR_STOPS_DIR)
 monthly_ge_dict = load_ge_loss_monthly(mis_source)
 
@@ -766,7 +777,7 @@ with main_col:
         st.markdown('<div class="chart-card" style="border-top-left-radius: 0; border-top-right-radius: 0;">', unsafe_allow_html=True)
 
         if df_shoplogix_all.empty:
-            st.info("📂 Upload your Shoplogix making report via the sidebar to view making downtimes.")
+            st.info("ℹ️ No Shoplogix making records found. Upload a report in the sidebar if needed.")
         else:
             df_slx = df_shoplogix_all.copy()
             df_slx["NORM_DATE"] = pd.to_datetime(df_slx["TIMESTAMP"], errors="coerce").dt.normalize()
@@ -928,10 +939,17 @@ with main_col:
         unsafe_allow_html=True
     )
 
-    def load_mom_history(uploaded_file):
+    mom_file_path = "PERK_MOM_History.xlsx"
+
+    def load_mom_history(path, uploaded_file):
         if uploaded_file is not None:
             try:
                 return pd.read_excel(uploaded_file)
+            except Exception:
+                pass
+        if os.path.exists(path):
+            try:
+                return pd.read_excel(path)
             except Exception:
                 pass
         return pd.DataFrame([
@@ -946,7 +964,7 @@ with main_col:
         ])
 
     if "mom_df" not in st.session_state or uploaded_mom is not None:
-        st.session_state.mom_df = load_mom_history(uploaded_mom)
+        st.session_state.mom_df = load_mom_history(mom_file_path, uploaded_mom)
 
     col_f1, col_f2 = st.columns([2, 2])
     with col_f1:
@@ -1098,3 +1116,10 @@ if os.name == 'nt' and not hasattr(sys, 'frozen') and 'streamlit' not in sys.mod
         download_report(EFFICIENCY_DIR, "Machine_Efficiency")
     finally:
         driver.quit()
+
+    # Automatically push updated files to GitHub from your plant PC
+    try:
+        subprocess.run("git add . && git commit -m 'Auto-update daily plant data' && git push", shell=True, check=True)
+        print("✅ Successfully pushed updated data to GitHub cloud repository!")
+    except Exception as e:
+        print(f"⚠️ Git auto-sync skipped or failed: {e}")
