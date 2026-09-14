@@ -6,24 +6,27 @@ import time
 import subprocess
 import re
 import tempfile
+import base64
+import requests
 from datetime import datetime, timedelta
 import io
 
-# Default target date (Yesterday)
 TARGET_DATE = datetime.now().date() - timedelta(days=1)
 
-# File Paths (Supports both local Windows and Streamlit Cloud environments)
+# Full absolute paths for local plant environment
 LOCAL_FILE_PATH = r"C:\Users\AUB5367\OneDrive - MDLZ\DMS-2\PERK MIS.-2026.xlsx"
 FILE_PATH = LOCAL_FILE_PATH if os.path.exists(LOCAL_FILE_PATH) else "PERK MIS.-2026.xlsx"
 
 SHEET_DMS = "DMS-2"
-MINOR_STOPS_DIR = r"C:\Users\AUB5367\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Minor Stops" if os.path.exists(r"C:\Users\AUB5367\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Minor Stops") else "Minor Stops"
-SHOPLOGIX_DIR = r"c:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\DMS-Downtimes" if os.path.exists(r"c:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\DMS-Downtimes") else "DMS-Downtimes"
-EFFICIENCY_DIR = r"C:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Machine Efficiency" if os.path.exists(r"C:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Machine Efficiency") else "Machine Efficiency"
+MINOR_STOPS_DIR = r"C:\Users\AUB5367\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Minor Stops"
+SHOPLOGIX_DIR = r"c:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\DMS-Downtimes"
+EFFICIENCY_DIR = r"C:\Users\AUB5367\OneDrive - MDLZ\Desktop\New folder\AM STEP-4\dESKTOP BACKUP\IL6S\Minor Stop-SWP\MTBF-PBI 2026\Machine Efficiency"
 DOWNLOAD_DIR = r"C:\Users\AUB5367\Downloads"
+MOM_FILE_PATH = r"C:\Users\AUB5367\OneDrive - MDLZ\Desktop\Python Automations\Daily MTBF\PERK_MOM_History.xlsx" if os.path.exists(r"C:\Users\AUB5367\OneDrive - MDLZ\Desktop\Python Automations\Daily MTBF\PERK_MOM_History.xlsx") else "PERK_MOM_History.xlsx"
 
 SHOPLOGIX_MAKING_URL = "https://portal.shoplogix.com/app/main/dashboards/6a86963d09213c5b9401f708"
 SHOPLOGIX_EFF_URL = "https://portal.shoplogix.com/app/main/dashboards/66af6f6e1f22b100361259da"
+SHOPLOGIX_MINOR_STOPS_URL = "https://portal.shoplogix.com/app/main/dashboards/68580fd5651fa00033608377"
 
 def safe_copy_file(src):
     if not os.path.exists(src):
@@ -68,15 +71,131 @@ def parse_date_to_timestamp(val_s):
     except Exception:
         return pd.Timestamp.min
 
+def upload_file_to_github(file_path, repo_path):
+    token = "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"
+    repo = "aub5367/Perk-DMS-Board"
+    url = f"https://api.github.com/repos/{repo}/contents/{repo_path}"
+    
+    if not os.path.exists(file_path):
+        return
 
-# ==============================================================================
-# SECTION A: STREAMLIT DASHBOARD (Runs Globally on Cloud & Local)
-# ==============================================================================
+    with open(file_path, "rb") as f:
+        content_bytes = f.read()
+    
+    encoded_content = base64.b64encode(content_bytes).decode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
+    }
+    
+    get_resp = requests.get(url, headers=headers)
+    sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+
+    payload = {
+        "message": f"Auto-update {repo_path} from plant PC",
+        "content": encoded_content
+    }
+    if sha:
+        payload["sha"] = sha
+
+    put_resp = requests.put(url, headers=headers, json=payload)
+    if put_resp.status_code in [200, 201]:
+        print(f"✅ Successfully uploaded {repo_path} to GitHub!")
+    else:
+        print(f"⚠️ Failed to upload {repo_path}: {put_resp.text}")
+
+# SELF-LAUNCHING TRIGGER
+is_streamlit_running = 'streamlit' in sys.modules or os.environ.get('STREAMLIT_SERVER_PORT') is not None
+
+if not is_streamlit_running and os.name == 'nt':
+    print("=" * 60)
+    print("Step 1: Connecting to Shoplogix Portal...")
+    print("=" * 60)
+
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        driver = webdriver.Edge()
+        wait = WebDriverWait(driver, 45)
+
+        def purge_folder(folder_path):
+            if os.path.exists(folder_path):
+                for f in os.listdir(folder_path):
+                    if f.endswith(".xlsx") or f.endswith(".xls"):
+                        try: os.remove(os.path.join(folder_path, f))
+                        except Exception: pass
+
+        def download_report(dest_folder, report_prefix):
+            os.makedirs(dest_folder, exist_ok=True)
+            try:
+                wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".widget-refresh-overlay.widget-loading")))
+            except Exception:
+                pass
+
+            time.sleep(3)
+            print(f"📥 Exporting report for {report_prefix}...")
+            edit_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[contains(@title,'Edit')]")))
+            driver.execute_script("arguments[0].scrollIntoView(true);", edit_btn)
+            driver.execute_script("arguments[0].click();", edit_btn)
+
+            dl_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button.js--btn-download-menu")))
+            driver.execute_script("arguments[0].click();", dl_btn)
+
+            excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Excel File']")))
+            driver.execute_script("arguments[0].click();", excel_btn)
+
+            time.sleep(12)
+            files = [os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".xlsx") and not f.startswith("~$")]
+            if files:
+                latest = max(files, key=os.path.getctime)
+                purge_folder(dest_folder)
+                target_filename = f"{report_prefix}_{TARGET_DATE.strftime('%Y_%m_%d')}.xlsx"
+                shutil.move(latest, os.path.join(dest_folder, target_filename))
+                print(f"✅ Successfully downloaded and updated: {target_filename}")
+
+        driver.get(SHOPLOGIX_MAKING_URL)
+        try:
+            user_input = wait.until(EC.visibility_of_element_located((By.NAME, "Username")))
+            user_input.send_keys("himanshu.chauhan@mdlz.com")
+            driver.find_element(By.XPATH, "//button[text()='Next']").click()
+            print("ℹ️ Username entered. Please complete password/MFA in the browser window if prompted...")
+        except Exception:
+            print("ℹ️ Already logged in or login page loaded differently. Proceeding...")
+
+        time.sleep(15) 
+        download_report(SHOPLOGIX_DIR, "Shoplogix_Making_Downtimes")
+
+        driver.get(SHOPLOGIX_EFF_URL)
+        time.sleep(8)
+        download_report(EFFICIENCY_DIR, "Machine_Efficiency")
+
+        driver.get(SHOPLOGIX_MINOR_STOPS_URL)
+        time.sleep(8)
+        download_report(MINOR_STOPS_DIR, "Shoplogix_Minor_Stops")
+
+        driver.quit()
+    except Exception as e:
+        print(f"⚠️ Automation download encountered an issue: {e}")
+
+    print("📤 Syncing local files to GitHub via API...")
+    upload_file_to_github(FILE_PATH, "PERK MIS.-2026.xlsx")
+    if os.path.exists(MOM_FILE_PATH):
+        upload_file_to_github(MOM_FILE_PATH, "PERK_MOM_History.xlsx")
+
+    print("🚀 Launching Dashboard Viewer...")
+    subprocess.run([sys.executable, "-m", "streamlit", "run", __file__])
+    sys.exit(0)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
+
+st.cache_data.clear()
 
 st.set_page_config(
     page_title="PERK DMS BOARD",
@@ -223,18 +342,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR MANAGEMENT FOR CLOUD SYNC ---
 with st.sidebar:
     st.markdown("### ⚙️ Dashboard Controls")
     st.markdown("---")
-    st.markdown("#### 📂 Optional Cloud File Sync")
+    st.markdown("#### 📂 Manual File Uploaders")
     uploaded_mis = st.file_uploader("Upload `PERK MIS.-2026.xlsx`", type=["xlsx"], key="mis_uploader")
     uploaded_shoplogix = st.file_uploader("Upload Shoplogix Making Report", type=["xlsx", "xls"], key="slx_uploader")
     uploaded_eff = st.file_uploader("Upload Machine Efficiency Report", type=["xlsx", "xls"], key="eff_uploader")
+    uploaded_minor_stops = st.file_uploader("Upload Shoplogix Minor Stops Report", type=["xlsx", "xls"], key="ms_uploader")
     uploaded_mom = st.file_uploader("Upload `PERK_MOM_History.xlsx`", type=["xlsx"], key="mom_uploader")
 
-# --- 1. LOAD DMS-2 6-DAY MATRIX ---
-@st.cache_data(ttl=30)
 def load_dms_6day_matrix(path_or_buffer, sheet):
     if hasattr(path_or_buffer, "read"):
         raw = pd.read_excel(path_or_buffer, sheet_name=sheet, header=None)
@@ -358,7 +475,6 @@ def load_dms_6day_matrix(path_or_buffer, sheet):
 
     return rows_data, recent_blocks, date_blocks
 
-@st.cache_data(ttl=30)
 def load_ge_loss_monthly(path):
     return {
         "JAN": 81.5, "FEB": 80.5, "MAR": 80.6, "APR": 80.1,
@@ -366,7 +482,6 @@ def load_ge_loss_monthly(path):
         "SEP": "", "OCT": "", "NOV": "", "DEC": ""
     }
 
-@st.cache_data(ttl=30)
 def load_shoplogix_from_folder(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path, exist_ok=True)
@@ -414,8 +529,24 @@ def standardize_slx_df(df):
 
     return clean_df[clean_df["MACHINE"].apply(is_target_making_machine)].copy()
 
-@st.cache_data(ttl=30)
 def load_packing_minor_stops(mis_path_or_buffer, ms_dir):
+    try:
+        files = glob.glob(os.path.join(ms_dir, "**", "*.xls*"), recursive=True)
+        valid_files = [f for f in files if not os.path.basename(f).startswith("~$")]
+        if valid_files:
+            latest_file = max(valid_files, key=os.path.getmtime)
+            tmp_ext = safe_copy_file(latest_file)
+            try:
+                raw_ext = pd.read_excel(tmp_ext)
+                raw_ext.columns = [str(c).strip().upper() for c in raw_ext.columns]
+                return standardize_packing_stops_df(raw_ext)
+            finally:
+                if os.path.exists(tmp_ext) and tmp_ext != latest_file:
+                    try: os.remove(tmp_ext)
+                    except Exception: pass
+    except Exception:
+        pass
+
     try:
         if hasattr(mis_path_or_buffer, "read"):
             xl = pd.ExcelFile(mis_path_or_buffer)
@@ -436,25 +567,10 @@ def load_packing_minor_stops(mis_path_or_buffer, ms_dir):
     except Exception:
         pass
 
-    try:
-        files = glob.glob(os.path.join(ms_dir, "**", "*.xls*"), recursive=True)
-        if files:
-            latest_file = max(files, key=os.path.getmtime)
-            tmp_ext = safe_copy_file(latest_file)
-            try:
-                raw_ext = pd.read_excel(tmp_ext)
-                raw_ext.columns = [str(c).strip().upper() for c in raw_ext.columns]
-                return standardize_packing_stops_df(raw_ext)
-            finally:
-                if os.path.exists(tmp_ext) and tmp_ext != latest_file:
-                    try: os.remove(tmp_ext)
-                    except Exception: pass
-    except Exception:
-        pass
-
     return pd.DataFrame()
 
 def standardize_packing_stops_df(df):
+    df.columns = [str(c).strip().upper() for c in df.columns]
     clean = pd.DataFrame()
     d_col = next((c for c in df.columns if "DATE" in c or "DAY" in c), None)
     m_col = next((c for c in df.columns if "MACHINE" in c or "EQUIPMENT" in c or "ASSET" in c), None)
@@ -489,7 +605,6 @@ def standardize_packing_stops_df(df):
 
     return clean[clean.apply(is_perk_packing, axis=1)]
 
-@st.cache_data(ttl=300)
 def load_efficiency_data(folder_path_or_buffer):
     if hasattr(folder_path_or_buffer, "read"):
         try:
@@ -531,7 +646,6 @@ def load_efficiency_data(folder_path_or_buffer):
             try: os.remove(tmp_path)
             except Exception: pass
 
-# --- LOAD DATASETS (HANDLES CLOUD UPLOADS, REPO DEFAULTS, OR LOCAL PATHS) ---
 try:
     if uploaded_mis is not None:
         mis_source = uploaded_mis
@@ -556,13 +670,18 @@ else:
 if uploaded_eff is not None:
     df_eff_master = load_efficiency_data(uploaded_eff)
 else:
-    eff_source = EFFICIENCY_DIR if os.path.exists(EFFICIENCY_DIR) else "Machine Efficiency"
-    df_eff_master = load_efficiency_data(eff_source)
+    df_eff_master = load_efficiency_data(EFFICIENCY_DIR)
 
-df_packing_ms_all = load_packing_minor_stops(mis_source, MINOR_STOPS_DIR)
+if uploaded_minor_stops is not None:
+    try:
+        df_packing_ms_all = standardize_packing_stops_df(pd.read_excel(uploaded_minor_stops))
+    except Exception:
+        df_packing_ms_all = pd.DataFrame()
+else:
+    df_packing_ms_all = load_packing_minor_stops(mis_source, MINOR_STOPS_DIR)
+
 monthly_ge_dict = load_ge_loss_monthly(mis_source)
 
-# Formatting helpers
 PERCENT_KPIS = ["compliance", "overweight", "waste cost", "papas", "closure", "attendance"]
 
 def format_cell_value(val_str, kpi_name, uom):
@@ -605,7 +724,6 @@ def get_pillar_css(p_name):
     if "sustain" in p: return "pillar-sustainability"
     return "pillar-morale"
 
-# --- PERK DMS BOARD HEADER ---
 st.markdown('<div class="board-header">PERK DMS BOARD</div>', unsafe_allow_html=True)
 
 col_ctrl1, col_ctrl2 = st.columns([4, 1])
@@ -663,7 +781,6 @@ for r in filtered_rows:
 html.append('</tbody></table></div>')
 st.markdown("".join(html), unsafe_allow_html=True)
 
-# --- CALCULATE EFFICIENCY FOR MAKING & PACKING CARDS ---
 cutter_ge = 0.0
 hll_cutter_ge = 0.0
 samridhi_packing_ge = 0.0
@@ -735,20 +852,17 @@ if not df_eff_master.empty:
         hll_total_delivered += match_eff * cap
     hll_packing_ge = (hll_total_delivered / 1000.0) * 100.0
 
-# --- COLOR THRESHOLDS LOGIC (TARGET = 80%) ---
 cutter_bg = "#991b1b" if cutter_ge < 80.0 else "#166534"
 hll_cutter_bg = "#991b1b" if hll_cutter_ge < 80.0 else "#166534"
 samridhi_bg = "#991b1b" if samridhi_packing_ge < 80.0 else "#166534"
 hll_pack_bg = "#991b1b" if hll_packing_ge < 80.0 else "#166534"
 
-# --- BALANCED LAYOUT WITH PROPER SPACING AND RIGHT SIDEBAR FOR MONTHLY GE CARDS ---
 st.divider()
 main_col, right_col = st.columns([4.2, 1.3])
 
 with main_col:
     chart_col1, chart_col2 = st.columns(2)
 
-    # 1. Left Section: MAKING
     with chart_col1:
         c_card1, c_card2 = st.columns(2)
         with c_card1:
@@ -845,7 +959,6 @@ with main_col:
 
         st.markdown('</div></div>', unsafe_allow_html=True)
 
-    # 2. Right Section: PACKING
     with chart_col2:
         c_card3, c_card4 = st.columns(2)
         with c_card3:
@@ -928,7 +1041,6 @@ with main_col:
 
         st.markdown('</div></div>', unsafe_allow_html=True)
 
-    # --- MOM OF THE MEETING (PERSISTENT HISTORY & FILTERABLE SECTION) ---
     st.markdown("---")
     st.markdown(
         """
@@ -939,19 +1051,13 @@ with main_col:
         unsafe_allow_html=True
     )
 
-    mom_file_path = "PERK_MOM_History.xlsx"
-
     def load_mom_history(path, uploaded_file):
         if uploaded_file is not None:
-            try:
-                return pd.read_excel(uploaded_file)
-            except Exception:
-                pass
+            try: return pd.read_excel(uploaded_file)
+            except Exception: pass
         if os.path.exists(path):
-            try:
-                return pd.read_excel(path)
-            except Exception:
-                pass
+            try: return pd.read_excel(path)
+            except Exception: pass
         return pd.DataFrame([
             {
                 "Date": TARGET_DATE.strftime('%d-%b-%Y'),
@@ -964,7 +1070,7 @@ with main_col:
         ])
 
     if "mom_df" not in st.session_state or uploaded_mom is not None:
-        st.session_state.mom_df = load_mom_history(mom_file_path, uploaded_mom)
+        st.session_state.mom_df = load_mom_history(MOM_FILE_PATH, uploaded_mom)
 
     col_f1, col_f2 = st.columns([2, 2])
     with col_f1:
@@ -997,7 +1103,12 @@ with main_col:
     with col_save1:
         if st.button("💾 Save MoM", use_container_width=True):
             st.session_state.mom_df = edited_mom_df
-            st.success("✅ Changes saved to cloud session!")
+            try:
+                edited_mom_df.to_excel(MOM_FILE_PATH, index=False)
+                upload_file_to_github(MOM_FILE_PATH, "PERK_MOM_History.xlsx")
+                st.success("✅ MoM changes saved locally and synced to GitHub!")
+            except Exception as ex:
+                st.error(f"⚠️ Failed to save file: {ex}")
     with col_save2:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1012,7 +1123,6 @@ with main_col:
             use_container_width=True
         )
 
-# --- RIGHT SIDEBAR COLUMN FOR MONTHLY GE CARDS ---
 with right_col:
     st.markdown(
         """
@@ -1049,77 +1159,3 @@ with right_col:
             """,
             unsafe_allow_html=True
         )
-
-
-# ==============================================================================
-# SECTION B: AUTOMATED SELENIUM DOWNLOADERS (Local Windows Plant PC Only)
-# ==============================================================================
-if os.name == 'nt' and not hasattr(sys, 'frozen') and 'streamlit' not in sys.modules:
-    print("=" * 60)
-    print("Step 1: Downloading Yesterday's Data from Shoplogix...")
-    print("=" * 60)
-
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-
-    driver = webdriver.Edge()
-    wait = WebDriverWait(driver, 30)
-
-    def purge_folder(folder_path):
-        if os.path.exists(folder_path):
-            for f in os.listdir(folder_path):
-                if f.endswith(".xlsx") or f.endswith(".xls"):
-                    target_file = os.path.join(folder_path, f)
-                    try:
-                        os.remove(target_file)
-                    except Exception:
-                        pass
-
-    def download_report(dest_folder, report_prefix):
-        os.makedirs(dest_folder, exist_ok=True)
-        try:
-            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".widget-refresh-overlay.widget-loading")))
-        except Exception:
-            pass
-
-        time.sleep(3)
-        edit_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[contains(@title,'Edit')]")))
-        driver.execute_script("arguments[0].scrollIntoView(true);", edit_btn)
-        driver.execute_script("arguments[0].click();", edit_btn)
-
-        dl_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button.js--btn-download-menu")))
-        driver.execute_script("arguments[0].click();", dl_btn)
-
-        excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Excel File']")))
-        driver.execute_script("arguments[0].click();", excel_btn)
-
-        time.sleep(12)
-        files = [os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".xlsx") and not f.startswith("~$")]
-        if files:
-            latest = max(files, key=os.path.getctime)
-            purge_folder(dest_folder)
-            target_filename = f"{report_prefix}_{TARGET_DATE.strftime('%Y_%m_%d')}.xlsx"
-            shutil.move(latest, os.path.join(dest_folder, target_filename))
-
-    try:
-        driver.get(SHOPLOGIX_MAKING_URL)
-        user_input = wait.until(EC.visibility_of_element_located((By.NAME, "Username")))
-        user_input.send_keys("himanshu.chauhan@mdlz.com")
-        driver.find_element(By.XPATH, "//button[text()='Next']").click()
-        time.sleep(10)
-        download_report(SHOPLOGIX_DIR, "Shoplogix_Making_Downtimes")
-
-        driver.get(SHOPLOGIX_EFF_URL)
-        time.sleep(8)
-        download_report(EFFICIENCY_DIR, "Machine_Efficiency")
-    finally:
-        driver.quit()
-
-    # Automatically push updated files to GitHub from your plant PC
-    try:
-        subprocess.run("git add . && git commit -m 'Auto-update daily plant data' && git push", shell=True, check=True)
-        print("✅ Successfully pushed updated data to GitHub cloud repository!")
-    except Exception as e:
-        print(f"⚠️ Git auto-sync skipped or failed: {e}")
