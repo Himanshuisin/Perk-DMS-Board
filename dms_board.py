@@ -428,7 +428,7 @@ def load_dms_6day_matrix(path_or_buffer, sheet):
         except Exception:
           pass
 
-  # Re-load with openpyxl preserving styles to extract cell colors
+  # Styled workbook reference for explicit cell background extraction
   try:
     if hasattr(path_or_buffer, "read"):
       wb_styled = openpyxl.load_workbook(path_or_buffer, data_only=True)
@@ -547,8 +547,7 @@ def load_dms_6day_matrix(path_or_buffer, sheet):
       t_val = raw.iat[r, t_col] if t_col < raw.shape[1] else ""
       a_val = raw.iat[r, a_col] if a_col < raw.shape[1] else ""
 
-      # Extract exact background color from Excel cell style if available
-      actual_bg = ""
+      excel_bg = ""
       if ws_styled:
         try:
           cell = ws_styled.cell(row=r + 1, column=a_col + 1)
@@ -556,21 +555,20 @@ def load_dms_6day_matrix(path_or_buffer, sheet):
           if fill and fill.fill_type and fill.start_color:
             color_val = fill.start_color.rgb
             if color_val and isinstance(color_val, str) and len(color_val) == 8:
-              # Convert ARGB to RGB hex
-              actual_bg = f"#{color_val[2:]}"
+              excel_bg = f"#{color_val[2:]}"
             elif (
                 color_val
                 and isinstance(color_val, str)
                 and len(color_val) == 6
             ):
-              actual_bg = f"#{color_val}"
+              excel_bg = f"#{color_val}"
         except Exception:
           pass
 
       row_item["days"].append({
           "target": "" if pd.isna(t_val) else str(t_val).strip(),
           "actual": "" if pd.isna(a_val) else str(a_val).strip(),
-          "excel_bg": actual_bg,
+          "excel_bg": excel_bg,
       })
 
     rows_data.append(row_item)
@@ -928,6 +926,37 @@ def format_cell_value(val_str, kpi_name, uom):
   return str(val_str).strip()
 
 
+def get_rag_class(kpi, target, actual):
+  if not actual or str(actual).strip() == "":
+    return ""
+  act_upper = str(actual).strip().upper()
+  if act_upper == "YES":
+    return "rag-green"
+  elif act_upper == "NO":
+    return "rag-red"
+  try:
+    t_clean = (
+        float(str(target).replace("%", "").strip()) if target else None
+    )
+    a_clean = float(str(actual).replace("%", "").strip())
+    if t_clean is None:
+      return ""
+    lower_is_better = [
+        "loss",
+        "stop",
+        "breakdown",
+        "overweight",
+        "waste",
+        "mttr",
+    ]
+    if any(term in kpi.lower() for term in lower_is_better):
+      return "rag-green" if a_clean <= t_clean else "rag-red"
+    else:
+      return "rag-green" if a_clean >= t_clean else "rag-red"
+  except Exception:
+    return ""
+
+
 def get_pillar_css(p_name):
   p = p_name.lower()
   if "safety" in p:
@@ -1003,12 +1032,26 @@ for r in filtered_rows:
     t_display = format_cell_value(day["target"], r["kpi"], r["uom"])
     a_display = format_cell_value(day["actual"], r["kpi"], r["uom"])
 
-    # Apply exact background color extracted from Excel if available
+    # Hybrid check: use Excel explicit color if present, else evaluate RAG rules matching source sheet
     excel_bg = day.get("excel_bg", "")
+    if not excel_bg:
+      rag_class = get_rag_class(r["kpi"], t_display, a_display)
+      if rag_class == "rag-green":
+        excel_bg = "#dcfce7"
+        text_color = "#166534"
+      elif rag_class == "rag-red":
+        excel_bg = "#fee2e2"
+        text_color = "#991b1b"
+      else:
+        text_color = "#1e293b"
+    else:
+      text_color = "#1e293b"
+
     actual_style = (
-        f'style="background-color: {excel_bg}; font-weight: 800;"'
+        f'style="background-color: {excel_bg}; color: {text_color}; font-weight:'
+        ' 800;"'
         if excel_bg
-        else ""
+        else 'style="font-weight: 600;"'
     )
 
     html.append(f'<td class="cell-target">{t_display}</td>')
