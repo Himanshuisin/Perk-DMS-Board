@@ -342,9 +342,9 @@ st.markdown(
         background-color: #f8fafc;
     }
     .cell-target {
-        background-color: #334155 !important;
-        color: #ffffff !important;
-        font-weight: 700;
+        background-color: #ffffff;
+        color: #475569;
+        font-weight: 600;
         font-size: 15px;
     }
     .card-container {
@@ -428,6 +428,7 @@ def load_dms_6day_matrix(path_or_buffer, sheet):
         except Exception:
           pass
 
+  # Styled workbook reference for explicit cell background extraction
   try:
     if hasattr(path_or_buffer, "read"):
       wb_styled = openpyxl.load_workbook(path_or_buffer, data_only=True)
@@ -906,13 +907,7 @@ PERCENT_KPIS = [
 def format_cell_value(val_str, kpi_name, uom):
   if not val_str or str(val_str).strip() in ("", "nan", "NAN"):
     return ""
-  
-  # Prevent error strings or unparsed strings from breaking layout
-  val_s = str(val_str).strip()
-  if "DIV/0" in val_s.upper():
-    return "#DIV/0!"
-
-  cleaned = val_s.replace("%", "").strip()
+  cleaned = str(val_str).replace("%", "").strip()
   is_percent_metric = (
       any(term in kpi_name.lower() for term in PERCENT_KPIS) or (uom == "%")
   )
@@ -921,23 +916,18 @@ def format_cell_value(val_str, kpi_name, uom):
     num = float(cleaned)
     if (
         is_percent_metric
-        and "%" not in val_s
+        and "%" not in str(val_str)
         and num <= 1.0
         and num > 0.0
     ):
       num = num * 100.0
-    
-    # Weight metrics (like Final Weight, Book Weight, etc.) should keep 1 decimal place cleanly
-    if any(w in kpi_name.lower() for w in ["weight", "overweight"]):
-      return f"{num:.1f}"
-
     formatted_num = f"{num:.1f}"
     return f"{formatted_num}%" if is_percent_metric else formatted_num
-  return val_s
+  return str(val_str).strip()
 
 
 def get_rag_class(kpi, target, actual):
-  if not actual or str(actual).strip() == "" or "#DIV/0!" in str(actual):
+  if not actual or str(actual).strip() == "":
     return ""
   act_upper = str(actual).strip().upper()
   if act_upper == "YES":
@@ -1042,6 +1032,7 @@ for r in filtered_rows:
     t_display = format_cell_value(day["target"], r["kpi"], r["uom"])
     a_display = format_cell_value(day["actual"], r["kpi"], r["uom"])
 
+    # Hybrid check: use Excel explicit color if present, else evaluate RAG rules matching source sheet
     excel_bg = day.get("excel_bg", "")
     if not excel_bg:
       rag_class = get_rag_class(r["kpi"], t_display, a_display)
