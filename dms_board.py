@@ -907,7 +907,6 @@ def format_cell_value(val_str, kpi_name, uom):
   if not val_str or str(val_str).strip() in ("", "nan", "NAN"):
     return ""
   
-  # Prevent error strings or unparsed strings from breaking layout
   val_s = str(val_str).strip()
   if "DIV/0" in val_s.upper():
     return "#DIV/0!"
@@ -927,7 +926,6 @@ def format_cell_value(val_str, kpi_name, uom):
     ):
       num = num * 100.0
     
-    # Weight metrics (like Final Weight, Book Weight, etc.) should keep 1 decimal place cleanly
     if any(w in kpi_name.lower() for w in ["weight", "overweight"]):
       return f"{num:.1f}"
 
@@ -944,6 +942,15 @@ def get_rag_class(kpi, target, actual):
     return "rag-green"
   elif act_upper == "NO":
     return "rag-red"
+  
+  # Special rule for Final Weight: above 10.59 should be Red
+  if "final weight" in kpi.lower():
+    try:
+      a_clean = float(str(actual).replace("%", "").strip())
+      return "rag-red" if a_clean > 10.59 else "rag-green"
+    except Exception:
+      pass
+
   try:
     t_clean = (
         float(str(target).replace("%", "").strip()) if target else None
